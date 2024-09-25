@@ -1,25 +1,54 @@
-﻿using FlaUI.Core.AutomationElements;
+﻿using System;
+using CoreFoundation; // For macOS specific references
+using Foundation;    // For macOS native types
 
 namespace FlaUI.WebDriver
 {
     public class KnownWindow
     {
-        public KnownWindow(Window window, string? windowRuntimeId, string windowHandle)
+        public KnownWindow(IntPtr windowHandle, string? windowRuntimeId, string windowIdentifier)
         {
-            Window = window;
-            WindowRuntimeId = windowRuntimeId;
             WindowHandle = windowHandle;
+            WindowRuntimeId = windowRuntimeId;
+            WindowIdentifier = windowIdentifier;
         }
 
-        public string WindowHandle { get; }
+        public string WindowIdentifier { get; }
 
         /// <summary>
-        /// A temporarily unique ID, so cannot be used for identity over time, but can be used for improving performance of equality tests.
-        /// "The identifier is only guaranteed to be unique to the UI of the desktop on which it was generated. Identifiers can be reused over time."
+        /// A temporarily unique ID, cannot be used for identity over time but can be used for improving performance of equality tests.
+        /// macOS does not provide direct runtime IDs for windows, so this field is kept for reference.
         /// </summary>
-        /// <seealso href="https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationelement-getruntimeid"/>
         public string? WindowRuntimeId { get; }
 
-        public Window Window { get; }
+        /// <summary>
+        /// On macOS, we use an IntPtr to represent an AXUIElementRef for windows.
+        /// </summary>
+        public IntPtr WindowHandle { get; }
+
+        /// <summary>
+        /// Gets the description of the window, useful for logging/debugging.
+        /// </summary>
+        public string GetWindowDescription()
+        {
+            return $"Window with identifier: {WindowIdentifier}, Runtime ID: {WindowRuntimeId}";
+        }
+
+        /// <summary>
+        /// Compares two KnownWindow instances based on their window handle.
+        /// </summary>
+        public override bool Equals(object? obj)
+        {
+            if (obj is KnownWindow otherWindow)
+            {
+                return WindowHandle == otherWindow.WindowHandle;
+            }
+            return false;
+        }
+
+        public override int GetHashCode()
+        {
+            return WindowHandle.GetHashCode();
+        }
     }
 }

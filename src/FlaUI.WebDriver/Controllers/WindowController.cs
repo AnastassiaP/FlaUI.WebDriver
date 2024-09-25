@@ -1,6 +1,6 @@
-﻿using FlaUI.Core.AutomationElements;
+﻿using Microsoft.AspNetCore.Mvc;
+using System.Runtime.InteropServices;
 using FlaUI.WebDriver.Models;
-using Microsoft.AspNetCore.Mvc;
 
 namespace FlaUI.WebDriver.Controllers
 {
@@ -8,6 +8,7 @@ namespace FlaUI.WebDriver.Controllers
     [ApiController]
     public class WindowController : ControllerBase
     {
+        
         private readonly ILogger<WindowController> _logger;
         private readonly ISessionRepository _sessionRepository;
 
@@ -21,27 +22,28 @@ namespace FlaUI.WebDriver.Controllers
         public async Task<ActionResult> CloseWindow([FromRoute] string sessionId)
         {
             var session = GetSession(sessionId);
-            if (session.App == null || session.App.HasExited)
+            if (session.ApplicationElement == IntPtr.Zero)
             {
                 throw WebDriverResponseException.NoWindowsOpenForSession();
             }
 
-            // When closing the last window of the application, the `GetAllTopLevelWindows` function times out with an exception
-            // Therefore retrieve windows before closing the current one
-            // https://github.com/FlaUI/FlaUI/issues/596
+            // Get the list of open windows before closing
             var windowHandlesBeforeClose = GetWindowHandles(session).ToArray();
-
             var currentWindow = session.CurrentWindow;
-            session.RemoveKnownWindow(currentWindow);
-            currentWindow.Close();
 
-            var remainingWindowHandles = windowHandlesBeforeClose.Except(new[] { session.CurrentWindowHandle } );
+            session.RemoveKnownWindow(currentWindow);
+
+            // Close the window using AXUIElement API
+            AXUIElementPerformAction(currentWindow, "AXClose");
+
+            var remainingWindowHandles = windowHandlesBeforeClose.Except(new[] { session.CurrentWindowHandle });
             if (!remainingWindowHandles.Any())
             {
                 _sessionRepository.Delete(session);
                 session.Dispose();
-                _logger.LogInformation("Closed last window of session and therefore deleted session with ID {SessionId}", sessionId);
+                _logger.LogInformation("Closed last window of session and deleted session with ID {SessionId}", sessionId);
             }
+
             return await Task.FromResult(WebDriverResult.Success(remainingWindowHandles));
         }
 
@@ -57,12 +59,10 @@ namespace FlaUI.WebDriver.Controllers
         public async Task<ActionResult> GetWindowHandle([FromRoute] string sessionId)
         {
             var session = GetSession(sessionId);
-
-            if(session.FindKnownWindowByWindowHandle(session.CurrentWindowHandle) == null)
+            if (session.FindKnownWindowByWindowHandle(session.CurrentWindowHandle) == null)
             {
                 throw WebDriverResponseException.WindowNotFoundByHandle(session.CurrentWindowHandle);
             }
-
             return await Task.FromResult(WebDriverResult.Success(session.CurrentWindowHandle));
         }
 
@@ -70,20 +70,16 @@ namespace FlaUI.WebDriver.Controllers
         public async Task<ActionResult> SwitchToWindow([FromRoute] string sessionId, [FromBody] SwitchWindowRequest switchWindowRequest)
         {
             var session = GetSession(sessionId);
-            if (session.App == null)
-            {
-                throw WebDriverResponseException.UnsupportedOperation("Close window not supported for Root app");
-            }
             var window = session.FindKnownWindowByWindowHandle(switchWindowRequest.Handle);
-            if (window == null)
+            if (window == IntPtr.Zero)
             {
                 throw WebDriverResponseException.WindowNotFoundByHandle(switchWindowRequest.Handle);
             }
 
             session.CurrentWindow = window;
-            window.SetForeground();
+            AXUIElementPerformAction(window, "AXRaise"); // Bring the window to the foreground
 
-            _logger.LogInformation("Switched to window with title {WindowTitle} (handle {WindowHandle}) (session {SessionId})", window.Title, switchWindowRequest.Handle, session.SessionId);
+            _logger.LogInformation("Switched to window with handle {WindowHandle} (session {SessionId})", switchWindowRequest.Handle, session.SessionId);
             return await Task.FromResult(WebDriverResult.Success());
         }
 
@@ -91,65 +87,54 @@ namespace FlaUI.WebDriver.Controllers
         public async Task<ActionResult> GetWindowRect([FromRoute] string sessionId)
         {
             var session = GetSession(sessionId);
-            return await Task.FromResult(WebDriverResult.Success(GetWindowRect(session.CurrentWindow)));
+            var windowRect = GetWindowRect(session.CurrentWindow);
+            return await Task.FromResult(WebDriverResult.Success(windowRect));
         }
 
         [HttpPost("rect")]
         public async Task<ActionResult> SetWindowRect([FromRoute] string sessionId, [FromBody] WindowRect windowRect)
         {
             var session = GetSession(sessionId);
+            var currentWindow = session.CurrentWindow;
 
-            if(!session.CurrentWindow.Patterns.Transform.IsSupported)
+            if (windowRect.Width.HasValue && windowRect.Height.HasValue)
             {
-                throw WebDriverResponseException.UnsupportedOperation("Cannot transform the current window");
+                SetWindowSize(currentWindow, windowRect.Width.Value, windowRect.Height.Value);
             }
 
-            if (windowRect.Width != null && windowRect.Height != null)
+            if (windowRect.X.HasValue && windowRect.Y.HasValue)
             {
-                if (!session.CurrentWindow.Patterns.Transform.Pattern.CanResize)
-                {
-                    throw WebDriverResponseException.UnsupportedOperation("Cannot resize the current window");
-                }
-                session.CurrentWindow.Patterns.Transform.Pattern.Resize(windowRect.Width.Value, windowRect.Height.Value);
+                SetWindowPosition(currentWindow, windowRect.X.Value, windowRect.Y.Value);
             }
 
-            if (windowRect.X != null && windowRect.Y != null)
-            {
-                if (!session.CurrentWindow.Patterns.Transform.Pattern.CanMove)
-                {
-                    throw WebDriverResponseException.UnsupportedOperation("Cannot move the current window");
-                }
-                session.CurrentWindow.Move(windowRect.X.Value, windowRect.Y.Value);
-            }
-
-            return await Task.FromResult(WebDriverResult.Success(GetWindowRect(session.CurrentWindow)));
+            var updatedRect = GetWindowRect(currentWindow);
+            return await Task.FromResult(WebDriverResult.Success(updatedRect));
         }
 
         private IEnumerable<string> GetWindowHandles(Session session)
         {
-            if (session.App == null)
+            if (session.ApplicationElement == IntPtr.Zero)
             {
                 throw WebDriverResponseException.UnsupportedOperation("Window operations not supported for Root app");
             }
-            if (session.App.HasExited)
-            {
-                return Enumerable.Empty<string>();
-            }
 
-            var knownWindows = session.App.GetAllTopLevelWindows(session.Automation)
-                .Select(session.GetOrAddKnownWindow);
-            return knownWindows.Select(knownWindows => knownWindows.WindowHandle);
+            // Get the list of open windows (macOS specific implementation)
+            var windows = GetAllTopLevelWindows();
+            return windows.Select(window => window.ToString()); // Convert to window handles as strings
         }
 
-        private WindowRect GetWindowRect(Window window)
+        private WindowRect GetWindowRect(IntPtr window)
         {
-            var boundingRectangle = window.BoundingRectangle;
+            // Get window position and size (macOS specific implementation)
+            var position = GetWindowPosition(window);
+            var size = GetWindowSize(window);
+
             return new WindowRect
             {
-                X = boundingRectangle.X, 
-                Y = boundingRectangle.Y,
-                Width = boundingRectangle.Width,
-                Height = boundingRectangle.Height
+                X = position.X,
+                Y = position.Y,
+                Width = size.Width,
+                Height = size.Height
             };
         }
 
@@ -163,5 +148,92 @@ namespace FlaUI.WebDriver.Controllers
             session.SetLastCommandTimeToNow();
             return session;
         }
+
+        #region P/Invoke for macOS window operations
+
+        [DllImport("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")]
+        private static extern int AXUIElementPerformAction(IntPtr element, string action);
+
+        [DllImport("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")]
+        private static extern int AXUIElementCopyAttributeValue(IntPtr element, string attribute, out IntPtr value);
+
+        [DllImport("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")]
+        private static extern int AXUIElementSetAttributeValue(IntPtr element, string attribute, IntPtr value);
+
+        private void SetWindowPosition(IntPtr window, double x, double y)
+        {
+            // macOS API for setting window position
+            var position = new CGPoint { X = x, Y = y };
+            var positionPtr = Marshal.AllocHGlobal(Marshal.SizeOf(position));
+            Marshal.StructureToPtr(position, positionPtr, false);
+
+            // Set the window position using AXUIElement
+            AXUIElementSetAttributeValue(window, "AXPosition", positionPtr);
+
+            Marshal.FreeHGlobal(positionPtr);
+        }
+
+        private void SetWindowSize(IntPtr window, double width, double height)
+        {
+            // macOS API for setting window size
+            var size = new CGSize { Width = width, Height = height };
+            var sizePtr = Marshal.AllocHGlobal(Marshal.SizeOf(size));
+            Marshal.StructureToPtr(size, sizePtr, false);
+
+            // Set the window size using AXUIElement
+            AXUIElementSetAttributeValue(window, "AXSize", sizePtr);
+
+            Marshal.FreeHGlobal(sizePtr);
+        }
+
+        private (double X, double Y) GetWindowPosition(IntPtr window)
+        {
+            // macOS API for getting window position
+            AXUIElementCopyAttributeValue(window, "AXPosition", out var positionPtr);
+            if (positionPtr != IntPtr.Zero)
+            {
+                var position = Marshal.PtrToStructure<CGPoint>(positionPtr);
+                return (position.X, position.Y);
+            }
+            return (0, 0); // Default value if unable to get position
+        }
+
+        private (double Width, double Height) GetWindowSize(IntPtr window)
+        {
+            // macOS API for getting window size
+            AXUIElementCopyAttributeValue(window, "AXSize", out var sizePtr);
+            if (sizePtr != IntPtr.Zero)
+            {
+                var size = Marshal.PtrToStructure<CGSize>(sizePtr);
+                return (size.Width, size.Height);
+            }
+            return (0, 0); // Default value if unable to get size
+        }
+
+        private IntPtr[] GetAllTopLevelWindows()
+        {
+            // macOS API to get all top-level windows
+            return Array.Empty<IntPtr>(); // Placeholder return
+        }
+
+        #endregion
+
+        #region Structs for CGPoint and CGSize
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct CGPoint
+        {
+            public double X;
+            public double Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        public struct CGSize
+        {
+            public double Width;
+            public double Height;
+        }
+
+        #endregion
     }
 }

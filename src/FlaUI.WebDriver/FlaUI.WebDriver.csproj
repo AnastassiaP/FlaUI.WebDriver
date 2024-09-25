@@ -1,29 +1,39 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk.Web">
 
   <PropertyGroup Label="Build">
-    <TargetFramework>net8.0-windows</TargetFramework>
+    <TargetFramework>net8.0-macos</TargetFramework>
+    <UseMaui>true</UseMaui>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <LangVersion>preview</LangVersion>
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
-    <RuntimeIdentifiers>win-x64</RuntimeIdentifiers>
+    <ApplicationId>com.avalonia.FlaUIWebDriver</ApplicationId>
+    <ServerGarbageCollection>false</ServerGarbageCollection>
+    <!-- Update RuntimeIdentifiers for macOS (Apple Silicon) -->
+    <RuntimeIdentifiers>osx-arm64</RuntimeIdentifiers>
+
     <PublishSingleFile>true</PublishSingleFile>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <ApplicationManifest>app.manifest</ApplicationManifest>
+
     <GitVersionTargetFramework>net8.0</GitVersionTargetFramework>
+    <EnableDefaultContentItems>false</EnableDefaultContentItems>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="FlaUI.UIA3.Signed" Version="4.0.0" />
-    <PackageReference Include="GitVersion.MsBuild" Version="6.0.2">
-      <PrivateAssets>all</PrivateAssets>
-      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
-    </PackageReference>
+    <PackageReference Include="GitVersion.MsBuild" Version="6.0.2" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="6.8.0" />
+    <!-- Explicit MAUI package references as per .NET 8 requirements -->
+    <PackageReference Include="Microsoft.Maui.Controls" Version="8.0.82" />
+    <PackageReference Include="Microsoft.AspNetCore.Components.WebView.Maui" Version="8.0.82" />
   </ItemGroup>
-
   <ItemGroup>
-    <Content Update="appsettings.*.json" CopyToPublishDirectory="Never" />
+    <!-- Ensure appsettings files are copied to the output directory -->
+    <Content Include="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+    <Content Include="appsettings.Development.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
   </ItemGroup>
 
 </Project>

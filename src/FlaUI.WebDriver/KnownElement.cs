@@ -1,12 +1,14 @@
-﻿using FlaUI.Core.AutomationElements;
+﻿using System;
+using CoreFoundation; // For macOS specific references
+using Foundation;    // For macOS native types
 
 namespace FlaUI.WebDriver
 {
     public class KnownElement
     {
-        public KnownElement(AutomationElement element, string? elementRuntimeId, string elementReference)
+        public KnownElement(IntPtr elementHandle, string? elementRuntimeId, string elementReference)
         {
-            Element = element;
+            ElementHandle = elementHandle;
             ElementRuntimeId = elementRuntimeId;
             ElementReference = elementReference;
         }
@@ -14,12 +16,39 @@ namespace FlaUI.WebDriver
         public string ElementReference { get; }
 
         /// <summary>
-        /// A temporarily unique ID, so cannot be used for identity over time, but can be used for improving performance of equality tests.
-        /// "The identifier is only guaranteed to be unique to the UI of the desktop on which it was generated. Identifiers can be reused over time."
+        /// A temporarily unique ID, cannot be used for identity over time but can be used for improving performance of equality tests.
+        /// macOS does not provide direct runtime IDs, so this field is kept for reference.
         /// </summary>
-        /// <seealso href="https://learn.microsoft.com/en-us/windows/win32/api/uiautomationclient/nf-uiautomationclient-iuiautomationelement-getruntimeid"/>
         public string? ElementRuntimeId { get; }
 
-        public AutomationElement Element { get; }
+        /// <summary>
+        /// In macOS, AXUIElementRef (represented by IntPtr) is the equivalent of AutomationElement.
+        /// </summary>
+        public IntPtr ElementHandle { get; }
+
+        /// <summary>
+        /// Gets the description of the element, useful for logging/debugging.
+        /// </summary>
+        public string GetElementDescription()
+        {
+            return $"Element with reference: {ElementReference}, Runtime ID: {ElementRuntimeId}";
+        }
+
+        /// <summary>
+        /// Compares two KnownElement instances based on their element handle.
+        /// </summary>
+        public override bool Equals(object? obj)
+        {
+            if (obj is KnownElement otherElement)
+            {
+                return ElementHandle == otherElement.ElementHandle;
+            }
+            return false;
+        }
+
+        public override int GetHashCode()
+        {
+            return ElementHandle.GetHashCode();
+        }
     }
 }

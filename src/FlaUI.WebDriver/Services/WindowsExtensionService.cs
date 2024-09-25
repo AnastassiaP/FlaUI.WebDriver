@@ -1,7 +1,7 @@
-﻿using FlaUI.Core.Input;
-using FlaUI.Core.WindowsAPI;
-using FlaUI.WebDriver.Models;
+﻿using FlaUI.WebDriver.Models;
+using Microsoft.Extensions.Logging;
 using System.Drawing;
+using System.Threading.Tasks;
 
 namespace FlaUI.WebDriver.Services
 {
@@ -44,7 +44,7 @@ namespace FlaUI.WebDriver.Services
             if (action.StartX.HasValue && action.StartY.HasValue)
             {
                 _logger.LogDebug("Moving mouse to ({X}, {Y})", action.StartX.Value, action.StartY.Value);
-                Mouse.MoveTo(action.StartX.Value, action.StartY.Value);
+                Mouse.MoveTo(new Point(action.StartX.Value, action.StartY.Value));
             }
             else if (action.StartElementId != null)
             {
@@ -70,7 +70,7 @@ namespace FlaUI.WebDriver.Services
             if (action.EndX.HasValue && action.EndY.HasValue)
             {
                 _logger.LogDebug("Moving mouse to ({X}, {Y})", action.EndX.Value, action.EndY.Value);
-                Mouse.MoveTo(action.EndX.Value, action.EndY.Value);
+                Mouse.MoveTo(new Point(action.EndX.Value, action.EndY.Value));
             }
             else if (action.EndElementId != null)
             {

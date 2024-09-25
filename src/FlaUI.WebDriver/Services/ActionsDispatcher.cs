@@ -1,13 +1,21 @@
-﻿using System.Drawing;
+﻿using System;
+using System.Drawing;
 using System.Globalization;
 using System.Text;
-using FlaUI.Core.Input;
+using System.Runtime.InteropServices;
 using FlaUI.WebDriver.Models;
+using Microsoft.Extensions.Logging;
 
 namespace FlaUI.WebDriver.Services
 {
     public class ActionsDispatcher : IActionsDispatcher
     {
+        public enum MouseButton
+        {
+            Left = 0,
+            Middle = 1,
+            Right = 2
+        }
         private readonly ILogger<ActionsDispatcher> _logger;
 
         public ActionsDispatcher(ILogger<ActionsDispatcher> logger)
@@ -36,9 +44,6 @@ namespace FlaUI.WebDriver.Services
             }
         }
 
-        /// <summary>
-        /// Implements "dispatch actions for a string" from https://www.w3.org/TR/webdriver2/#element-send-keys
-        /// </summary>
         public async Task DispatchActionsForString(
             Session session,
             string inputId,
@@ -80,10 +85,6 @@ namespace FlaUI.WebDriver.Services
                     var undo = keyDownAction.Clone();
                     undo.SubType = "keyUp";
 
-                    // NOTE: According to the spec, the undo action should be added to an "undo actions" list,
-                    // but that may be an oversight in the spec: we already have such a thing in the input cancel
-                    // list which won't get cleared correctly if we're using a separate "undo actions" list. See
-                    // https://github.com/w3c/webdriver/issues/1809.
                     session.InputState.InputCancelList.Add(undo);
                 }
                 else if (Keys.IsTypeable(cluster))
@@ -94,7 +95,6 @@ namespace FlaUI.WebDriver.Services
                 {
                     await DispatchTypeableString(session, inputId, source, currentTypeableText.ToString());
                     currentTypeableText.Clear();
-                    // TODO: Dispatch composition events.
                 }
             }
 
@@ -106,14 +106,6 @@ namespace FlaUI.WebDriver.Services
             await ClearModifierKeyState(session, inputId);
         }
 
-        /// <summary>
-        /// Dispatches the release actions for the given input ID.
-        /// </summary>
-        /// <remarks>
-        /// The only part of the spec that mentions this is https://www.w3.org/TR/webdriver2/#release-actions, but the spec
-        /// mentions that the input cancel list must be empty before removing an input source in
-        /// https://www.w3.org/TR/webdriver2/#input-state so I can only assume that there was an oversight in the spec.
-        /// </remarks>
         public async Task DispatchReleaseActions(Session session, string inputId)
         {
             for (var i = session.InputState.InputCancelList.Count - 1; i >= 0; i--)
@@ -128,18 +120,8 @@ namespace FlaUI.WebDriver.Services
             }
         }
 
-        /// <summary>
-        /// Implements a variation on "clear the modifier key state" from 
-        /// https://www.w3.org/TR/webdriver2/#element-send-keys.
-        /// </summary>
-        /// <remarks>
-        /// https://github.com/w3c/webdriver/issues/1809 
-        /// </remarks>
         private Task ClearModifierKeyState(Session session, string inputId) => DispatchReleaseActions(session, inputId);
 
-        /// <summary>
-        /// Implements "dispatch the events for a typeable string" from https://www.w3.org/TR/webdriver2/#element-send-keys
-        /// </summary>
         private async Task DispatchTypeableString(
             Session session,
             string inputId,
@@ -198,9 +180,6 @@ namespace FlaUI.WebDriver.Services
             }
         }
 
-        /// <summary>
-        /// Dispatches a keyDown, keyUp or pause action from https://www.w3.org/TR/webdriver2/#keyboard-actions
-        /// </summary>
         private async Task DispatchKeyAction(Session session, Action action)
         {
             if (action.Value == null)
@@ -216,73 +195,18 @@ namespace FlaUI.WebDriver.Services
                 case "keyDown":
                     {
                         var key = Keys.GetNormalizedKeyValue(action.Value);
-                        var code = Keys.GetCode(action.Value);
-                        var virtualKey = Keys.GetVirtualKey(code);
-                        _logger.LogDebug("Dispatching key down action, key '{Value}' with ID '{Id}'", code, action.Id);
-
-                        if (key == "Alt")
-                        {
-                            source.Alt = true;
-                        }
-                        else if (key == "Shift")
-                        {
-                            source.Shift = true;
-                        }
-                        else if (key == "Control")
-                        {
-                            source.Ctrl = true;
-                        }
-                        else if (key == "Meta")
-                        {
-                            source.Meta = true;
-                        }
-
+                        _logger.LogDebug("Dispatching key down action, key '{Value}' with ID '{Id}'", key, action.Id);
+                        PressKey(key); // macOS specific key press
                         source.Pressed.Add(action.Value);
-
-                        Keyboard.Press(virtualKey);
-
-                        var cancelAction = action.Clone();
-                        cancelAction.SubType = "keyUp";
-                        session.InputState.InputCancelList.Add(cancelAction);
-
-                        // HACK: Adding a small delay after each key press because otherwise the key press
-                        // seems to sometimes appear after the key action completes.
-                        await Task.Delay(10);
                         await Task.Yield();
                         return;
                     }
                 case "keyUp":
                     {
                         var key = Keys.GetNormalizedKeyValue(action.Value);
-                        var code = Keys.GetCode(action.Value);
-                        var virtualKey = Keys.GetVirtualKey(code);
-                        _logger.LogDebug("Dispatching key up action, key '{Value}' with ID '{Id}'", code, action.Id);
-
-                        if (key == "Alt")
-                        {
-                            source.Alt = false;
-                        }
-                        else if (key == "Shift")
-                        {
-                            source.Shift = false;
-                        }
-                        else if (key == "Control")
-                        {
-                            source.Ctrl = false;
-                        }
-                        else if (key == "Meta")
-                        {
-                            source.Meta = false;
-                        }
-
+                        _logger.LogDebug("Dispatching key up action, key '{Value}' with ID '{Id}'", key, action.Id);
+                        ReleaseKey(key); // macOS specific key release
                         source.Pressed.Remove(action.Value);
-
-                        Keyboard.Release(virtualKey);
-
-                        // HACK: Adding a small delay after each key press because otherwise the key press
-                        // seems to sometimes appear after the key action completes.
-                        await Task.Delay(10);
-
                         await Task.Yield();
                         return;
                     }
@@ -290,135 +214,203 @@ namespace FlaUI.WebDriver.Services
                     await Task.Yield();
                     return;
                 default:
-                    throw WebDriverResponseException.InvalidArgument($"Pointer action subtype {action.SubType} unknown");
+                    throw WebDriverResponseException.InvalidArgument($"Key action subtype {action.SubType} unknown");
             }
         }
 
         private async Task DispatchWheelAction(Session session, Action action)
         {
-
-            switch (action.SubType)
+            _logger.LogDebug("Dispatching wheel scroll action, coordinates ({X},{Y}), delta ({DeltaX},{DeltaY}) with ID '{Id}'", action.X, action.Y, action.DeltaX, action.DeltaY, action.Id);
+            if (action.X == null || action.Y == null || action.DeltaX == null || action.DeltaY == null)
             {
-                case "scroll":
-                    _logger.LogDebug("Dispatching wheel scroll action, coordinates ({X},{Y}), delta ({DeltaX},{DeltaY}) with ID '{Id}'", action.X, action.Y, action.DeltaX, action.DeltaY, action.Id);
-                    if (action.X == null || action.Y == null)
-                    {
-                        throw WebDriverResponseException.InvalidArgument("For wheel scroll, X and Y are required");
-                    }
-                    Mouse.MoveTo(action.X.Value, action.Y.Value);
-                    if (action.DeltaX == null || action.DeltaY == null)
-                    {
-                        throw WebDriverResponseException.InvalidArgument("For wheel scroll, delta X and delta Y are required");
-                    }
-                    if (action.DeltaY != 0)
-                    {
-                        Mouse.Scroll(action.DeltaY.Value);
-                    }
-                    if (action.DeltaX != 0)
-                    {
-                        Mouse.HorizontalScroll(action.DeltaX.Value);
-                    }
-                    return;
-                case "pause":
-                    await Task.Yield();
-                    return;
-                default:
-                    throw WebDriverResponseException.InvalidArgument($"Wheel action subtype {action.SubType} unknown");
+                throw WebDriverResponseException.InvalidArgument("For wheel scroll, X, Y, delta X, and delta Y are required");
             }
+
+            MouseMoveTo(action.X.Value, action.Y.Value); // macOS specific mouse move
+            ScrollWheel(action.DeltaX.Value, action.DeltaY.Value); // macOS specific scroll
+            await Task.Yield();
         }
 
         private async Task DispatchPointerAction(Session session, Action action)
         {
-
             switch (action.SubType)
             {
                 case "pointerMove":
-                    _logger.LogDebug("Dispatching pointer move action, coordinates ({X},{Y}) with origin {Origin}, with ID '{Id}'", action.X, action.Y, action.Origin, action.Id);
+                    _logger.LogDebug("Dispatching pointer move action, coordinates ({X},{Y})", action.X, action.Y);
                     var point = GetCoordinates(session, action);
-                    Mouse.MoveTo(point);
+                    MouseMoveTo(point.X, point.Y); // macOS specific mouse move
                     await Task.Yield();
                     return;
                 case "pointerDown":
-                    _logger.LogDebug("Dispatching pointer down action, button {Button}, with ID '{Id}'", action.Button, action.Id);
-                    Mouse.Down(GetMouseButton(action.Button));
-                    var cancelAction = action.Clone();
-                    cancelAction.SubType = "pointerUp";
-                    session.InputState.InputCancelList.Add(cancelAction);
+                    _logger.LogDebug("Dispatching pointer down action, button {Button}", action.Button);
+                    MouseDown(GetMouseButton(action.Button)); // macOS specific mouse down
                     await Task.Yield();
                     return;
                 case "pointerUp":
-                    _logger.LogDebug("Dispatching pointer up action, button {Button}, with ID '{Id}'", action.Button, action.Id);
-                    Mouse.Up(GetMouseButton(action.Button));
+                    _logger.LogDebug("Dispatching pointer up action, button {Button}", action.Button);
+                    MouseUp(GetMouseButton(action.Button)); // macOS specific mouse up
                     await Task.Yield();
                     return;
                 case "pause":
                     await Task.Yield();
                     return;
                 default:
-                    throw WebDriverResponseException.UnsupportedOperation($"Pointer action subtype {action.Type} not supported");
+                    throw WebDriverResponseException.UnsupportedOperation($"Pointer action subtype {action.SubType} not supported");
             }
         }
 
-        private static Point GetCoordinates(Session session, Action action)
+        private static System.Drawing.Point GetCoordinates(Session session, Action action)
         {
-            var origin = action.Origin ?? "viewport";
-
-            switch (origin)
+            if (action.X == null || action.Y == null)
             {
-                case "viewport":
-                    if (action.X == null || action.Y == null)
-                    {
-                        throw WebDriverResponseException.InvalidArgument("For pointer move, X and Y are required");
-                    }
-
-                    return new Point(action.X.Value, action.Y.Value);
-                case "pointer":
-                    if (action.X == null || action.Y == null)
-                    {
-                        throw WebDriverResponseException.InvalidArgument("For pointer move, X and Y are required");
-                    }
-
-                    var current = Mouse.Position;
-                    return new Point(current.X + action.X.Value, current.Y + action.Y.Value);
-                case Dictionary<string, string> originMap:
-                    if (originMap.TryGetValue("element-6066-11e4-a52e-4f735466cecf", out var elementId))
-                    {
-                        if (session.FindKnownElementById(elementId) is { } element)
-                        {
-                            var bounds = element.BoundingRectangle;
-                            var x = bounds.Left + (bounds.Width / 2) + (action.X ?? 0);
-                            var y = bounds.Top + (bounds.Height / 2) + (action.Y ?? 0);
-                            return new(x, y);
-                        }
-
-                        throw WebDriverResponseException.InvalidArgument(
-                            $"An unknown element ID '{elementId}' provided for action item '{action.Type}'.");
-                    }
-
-                    throw WebDriverResponseException.InvalidArgument(
-                        $"An unknown element '{origin}' provided for action item '{action.Type}'.");
-                default:
-                    throw WebDriverResponseException.InvalidArgument(
-                        $"Unknown origin type '{origin}' provided for action item '{action.Type}'.");
+                throw WebDriverResponseException.InvalidArgument("For pointer move, X and Y are required");
             }
+            return new Point(action.X.Value, action.Y.Value);
         }
 
         private static MouseButton GetMouseButton(int? button)
         {
-            if (button == null)
+            return button switch
             {
-                throw WebDriverResponseException.InvalidArgument($"Pointer action button argument missing");
-            }
-            switch (button)
+                0 => MouseButton.Left,
+                1 => MouseButton.Middle,
+                2 => MouseButton.Right,
+                _ => throw WebDriverResponseException.UnsupportedOperation($"Pointer button {button} not supported")
+            };
+        }
+
+        #region P/Invoke for macOS (using CoreGraphics for keyboard and mouse events)
+
+        [DllImport("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")]
+        private static extern void CGEventPost(uint tap, IntPtr eventRef);
+
+        [DllImport("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")]
+        private static extern IntPtr CGEventCreateKeyboardEvent(IntPtr source, ushort virtualKey, bool keyDown);
+
+        [DllImport("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")]
+        private static extern IntPtr CGEventCreateMouseEvent(IntPtr source, CGEventType mouseType, CGPoint mouseCursorPosition, CGMouseButton mouseButton);
+
+        [DllImport("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")]
+        private static extern IntPtr CGEventCreateScrollWheelEvent(IntPtr source, CGScrollEventUnit units, int wheelCount, int delta);
+
+        [DllImport("/System/Library/Frameworks/CoreGraphics.framework/CoreGraphics")]
+        private static extern CGPoint CGEventGetLocation(IntPtr eventRef);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct CGPoint
+        {
+            public double X;
+            public double Y;
+
+            public CGPoint(double x, double y)
             {
-                case 0: return MouseButton.Left;
-                case 1: return MouseButton.Middle;
-                case 2: return MouseButton.Right;
-                case 3: return MouseButton.XButton1;
-                case 4: return MouseButton.XButton2;
-                default:
-                    throw WebDriverResponseException.UnsupportedOperation($"Pointer button {button} not supported");
+                X = x;
+                Y = y;
             }
         }
+
+        private enum CGEventType : uint
+        {
+            KeyDown = 10,
+            KeyUp = 11,
+            LeftMouseDown = 1,
+            LeftMouseUp = 2,
+            RightMouseDown = 3,
+            RightMouseUp = 4,
+            MouseMoved = 5,
+            LeftMouseDragged = 6,
+            RightMouseDragged = 7,
+            ScrollWheel = 22
+        }
+
+        private enum CGMouseButton : uint
+        {
+            Left = 0,
+            Right = 1
+        }
+
+        private enum CGScrollEventUnit : uint
+        {
+            Pixel = 0,
+            Line = 1
+        }
+
+        private static void PressKey(string key)
+        {
+            ushort keyCode = GetVirtualKeyCode(key); // This method should map the string key to a macOS key code.
+            IntPtr keyDownEvent = CGEventCreateKeyboardEvent(IntPtr.Zero, keyCode, true);
+            CGEventPost(0, keyDownEvent);
+            Marshal.Release(keyDownEvent);
+        }
+
+        private static void ReleaseKey(string key)
+        {
+            ushort keyCode = GetVirtualKeyCode(key); // This method should map the string key to a macOS key code.
+            IntPtr keyUpEvent = CGEventCreateKeyboardEvent(IntPtr.Zero, keyCode, false);
+            CGEventPost(0, keyUpEvent);
+            Marshal.Release(keyUpEvent);
+        }
+
+        private static void MouseMoveTo(double x, double y)
+        {
+            CGPoint newPosition = new CGPoint(x, y);
+            IntPtr mouseMoveEvent = CGEventCreateMouseEvent(IntPtr.Zero, CGEventType.MouseMoved, newPosition, CGMouseButton.Left);
+            CGEventPost(0, mouseMoveEvent);
+            Marshal.Release(mouseMoveEvent);
+        }
+
+        private static void MouseDown(MouseButton button)
+        {
+            CGPoint currentPosition = GetMousePosition();
+            CGMouseButton mouseButton = GetCGMouseButton(button);
+            IntPtr mouseDownEvent = CGEventCreateMouseEvent(IntPtr.Zero, CGEventType.LeftMouseDown, currentPosition, mouseButton);
+            CGEventPost(0, mouseDownEvent);
+            Marshal.Release(mouseDownEvent);
+        }
+
+        private static void MouseUp(MouseButton button)
+        {
+            CGPoint currentPosition = GetMousePosition();
+            CGMouseButton mouseButton = GetCGMouseButton(button);
+            IntPtr mouseUpEvent = CGEventCreateMouseEvent(IntPtr.Zero, CGEventType.LeftMouseUp, currentPosition, mouseButton);
+            CGEventPost(0, mouseUpEvent);
+            Marshal.Release(mouseUpEvent);
+        }
+
+        private static void ScrollWheel(double deltaX, double deltaY)
+        {
+            IntPtr scrollEvent = CGEventCreateScrollWheelEvent(IntPtr.Zero, CGScrollEventUnit.Line, 2, (int)deltaY, (int)deltaX);
+            CGEventPost(0, scrollEvent);
+            Marshal.Release(scrollEvent);
+        }
+
+        private static CGPoint GetMousePosition()
+        {
+            IntPtr eventRef = CGEventCreateMouseEvent(IntPtr.Zero, CGEventType.MouseMoved, new CGPoint(0, 0), CGMouseButton.Left);
+            CGPoint mousePosition = CGEventGetLocation(eventRef);
+            Marshal.Release(eventRef);
+            return mousePosition;
+        }
+
+        private static CGMouseButton GetCGMouseButton(MouseButton button)
+        {
+            return button switch
+            {
+                MouseButton.Left => CGMouseButton.Left,
+                MouseButton.Right => CGMouseButton.Right,
+                _ => throw new ArgumentOutOfRangeException(nameof(button), "Unsupported mouse button")
+            };
+        }
+
+        private static ushort GetVirtualKeyCode(string key)
+        {
+            return key switch
+            {
+                "Space" => 0x31, // Example for the space key, more mappings are needed
+                _ => throw new ArgumentOutOfRangeException(nameof(key), "Unsupported key")
+            };
+        }
+
+        #endregion
     }
 }

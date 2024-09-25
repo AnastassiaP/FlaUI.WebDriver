@@ -1,35 +1,34 @@
-﻿using FlaUI.Core;
-using FlaUI.Core.AutomationElements;
-using FlaUI.UIA3;
+﻿using System;
 using System.Collections.Concurrent;
 using System.Runtime.InteropServices;
+using CoreFoundation;
+using AppKit;
+using Foundation;
 
 namespace FlaUI.WebDriver
 {
     public class Session : IDisposable
     {
-        public Session(Application? app, bool isAppOwnedBySession)
+        public Session(NSApplication? app, bool isAppOwnedBySession)
         {
             App = app;
             SessionId = Guid.NewGuid().ToString();
-            Automation = new UIA3Automation();
             InputState = new InputState();
             TimeoutsConfiguration = new TimeoutsConfiguration();
             IsAppOwnedBySession = isAppOwnedBySession;
 
             if (app != null)
             {
-                // We have to capture the initial window handle to be able to keep it stable
-                CurrentWindowWithHandle = GetOrAddKnownWindow(app.GetMainWindow(Automation, PageLoadTimeout));
+                // We have to capture the initial window reference on macOS
+                CurrentWindowWithElement = GetOrAddKnownWindow(GetMainWindow(app));
             }
         }
 
         public string SessionId { get; }
-        public UIA3Automation Automation { get; }
-        public Application? App { get; }
+        public NSApplication? App { get; }
         public InputState InputState { get; }
         private ConcurrentDictionary<string, KnownElement> KnownElementsByElementReference { get; } = new ConcurrentDictionary<string, KnownElement>();
-        private ConcurrentDictionary<string, KnownWindow> KnownWindowsByWindowHandle { get; } = new ConcurrentDictionary<string, KnownWindow>();
+        private ConcurrentDictionary<string, KnownWindow> KnownWindowsByWindowReference { get; } = new ConcurrentDictionary<string, KnownWindow>();
         public TimeSpan ImplicitWaitTimeout => TimeSpan.FromMilliseconds(TimeoutsConfiguration.ImplicitWaitTimeoutMs);
         public TimeSpan PageLoadTimeout => TimeSpan.FromMilliseconds(TimeoutsConfiguration.PageLoadTimeoutMs);
         public TimeSpan? ScriptTimeout => TimeoutsConfiguration.ScriptTimeoutMs.HasValue ? TimeSpan.FromMilliseconds(TimeoutsConfiguration.ScriptTimeoutMs.Value) : null;
@@ -37,33 +36,33 @@ namespace FlaUI.WebDriver
 
         public TimeoutsConfiguration TimeoutsConfiguration { get; set; }
 
-        private KnownWindow? CurrentWindowWithHandle { get; set; }
+        private KnownWindow? CurrentWindowWithElement { get; set; }
 
-        public Window CurrentWindow
+        public AXUIElement CurrentWindow
         {
             get
             {
-                if (App == null || CurrentWindowWithHandle == null)
+                if (App == null || CurrentWindowWithElement == null)
                 {
-                    throw WebDriverResponseException.UnsupportedOperation("This operation is not supported for Root app");
+                    throw WebDriverResponseException.UnsupportedOperation("This operation is not supported for the Root app");
                 }
-                return CurrentWindowWithHandle.Window;
+                return CurrentWindowWithElement.Window;
             }
             set
             {
-                CurrentWindowWithHandle = GetOrAddKnownWindow(value);
+                CurrentWindowWithElement = GetOrAddKnownWindow(value);
             }
         }
 
-        public string CurrentWindowHandle
+        public string CurrentWindowReference
         {
             get
             {
-                if (App == null || CurrentWindowWithHandle == null)
+                if (App == null || CurrentWindowWithElement == null)
                 {
-                    throw WebDriverResponseException.UnsupportedOperation("This operation is not supported for Root app");
+                    throw WebDriverResponseException.UnsupportedOperation("This operation is not supported for the Root app");
                 }
-                return CurrentWindowWithHandle.WindowHandle;
+                return CurrentWindowWithElement.WindowReference;
             }
         }
 
@@ -77,22 +76,22 @@ namespace FlaUI.WebDriver
             LastNewCommandTimeUtc = DateTime.UtcNow;
         }
 
-        public KnownElement GetOrAddKnownElement(AutomationElement element)
+        public KnownElement GetOrAddKnownElement(AXUIElement element)
         {
-            var elementRuntimeId = GetRuntimeId(element);
-            var result = KnownElementsByElementReference.Values.FirstOrDefault(knownElement => knownElement.ElementRuntimeId == elementRuntimeId && SafeElementEquals(knownElement.Element, element));
+            var elementReference = GetElementReference(element);
+            var result = KnownElementsByElementReference.Values.FirstOrDefault(knownElement => SafeElementEquals(knownElement.Element, element));
             if (result == null)
             {
                 do
                 {
-                    result = new KnownElement(element, elementRuntimeId, Guid.NewGuid().ToString());
+                    result = new KnownElement(element, elementReference, Guid.NewGuid().ToString());
                 }
                 while (!KnownElementsByElementReference.TryAdd(result.ElementReference, result));
             }
             return result;
         }
 
-        public AutomationElement? FindKnownElementById(string elementId)
+        public AXUIElement? FindKnownElementById(string elementId)
         {
             if (!KnownElementsByElementReference.TryGetValue(elementId, out var knownElement))
             {
@@ -101,44 +100,42 @@ namespace FlaUI.WebDriver
             return knownElement.Element;
         }
 
-        public KnownWindow GetOrAddKnownWindow(Window window)
+        public KnownWindow GetOrAddKnownWindow(AXUIElement window)
         {
-            var windowRuntimeId = GetRuntimeId(window);
-            var result = KnownWindowsByWindowHandle.Values.FirstOrDefault(knownWindow => knownWindow.WindowRuntimeId == windowRuntimeId && SafeElementEquals(knownWindow.Window, window));
+            var windowReference = GetElementReference(window);
+            var result = KnownWindowsByWindowReference.Values.FirstOrDefault(knownWindow => SafeElementEquals(knownWindow.Window, window));
             if (result == null)
             {
                 do
                 {
-                    result = new KnownWindow(window, windowRuntimeId, Guid.NewGuid().ToString());
+                    result = new KnownWindow(window, windowReference, Guid.NewGuid().ToString());
                 }
-                while (!KnownWindowsByWindowHandle.TryAdd(result.WindowHandle, result));
+                while (!KnownWindowsByWindowReference.TryAdd(result.WindowReference, result));
             }
             return result;
         }
 
-        public Window? FindKnownWindowByWindowHandle(string windowHandle)
+        public AXUIElement? FindKnownWindowByWindowReference(string windowReference)
         {
-            if (!KnownWindowsByWindowHandle.TryGetValue(windowHandle, out var knownWindow))
+            if (!KnownWindowsByWindowReference.TryGetValue(windowReference, out var knownWindow))
             {
                 return null;
             }
             return knownWindow.Window;
         }
 
-        public void RemoveKnownWindow(Window window)
+        public void RemoveKnownWindow(AXUIElement window)
         {
-            var item = KnownWindowsByWindowHandle.Values.FirstOrDefault(knownElement => knownElement.Window.Equals(window));
+            var item = KnownWindowsByWindowReference.Values.FirstOrDefault(knownWindow => knownWindow.Window.Equals(window));
             if (item != null)
             {
-                KnownWindowsByWindowHandle.TryRemove(item.WindowHandle, out _);
+                KnownWindowsByWindowReference.TryRemove(item.WindowReference, out _);
             }
         }
 
         public void EvictUnavailableElements()
         {
-            // Evict unavailable elements to prevent slowing down
-            // (use ToArray to prevent concurrency issues while enumerating)
-            var unavailableElements = KnownElementsByElementReference.ToArray().Where(item => !item.Value.Element.IsAvailable).Select(item => item.Key);
+            var unavailableElements = KnownElementsByElementReference.ToArray().Where(item => !IsElementAvailable(item.Value.Element)).Select(item => item.Key);
             foreach (var unavailableElementKey in unavailableElements)
             {
                 KnownElementsByElementReference.TryRemove(unavailableElementKey, out _);
@@ -147,47 +144,61 @@ namespace FlaUI.WebDriver
 
         public void EvictUnavailableWindows()
         {
-            // Evict unavailable windows to prevent slowing down
-            // (use ToArray to prevent concurrency issues while enumerating)
-            var unavailableWindows = KnownWindowsByWindowHandle.ToArray().Where(item => !item.Value.Window.IsAvailable).Select(item => item.Key).ToArray();
+            var unavailableWindows = KnownWindowsByWindowReference.ToArray().Where(item => !IsElementAvailable(item.Value.Window)).Select(item => item.Key).ToArray();
             foreach (var unavailableWindowKey in unavailableWindows)
             {
-                KnownWindowsByWindowHandle.TryRemove(unavailableWindowKey, out _);
+                KnownWindowsByWindowReference.TryRemove(unavailableWindowKey, out _);
             }
         }
 
         public void Dispose()
         {
-            if (IsAppOwnedBySession && App != null && !App.HasExited)
+            if (IsAppOwnedBySession && App != null)
             {
-                App.Close();
+                App.Terminate(this);
             }
-            Automation.Dispose();
-            App?.Dispose();
         }
 
-        private string? GetRuntimeId(AutomationElement element)
+        private string? GetElementReference(AXUIElement element)
         {
-            if (!element.Properties.RuntimeId.IsSupported)
-            {
-                return null;
-            }
-
-            return string.Join(",", element.Properties.RuntimeId.Value.Select(item => Convert.ToBase64String(BitConverter.GetBytes(item))));
+            // On macOS, AXUIElement can be referred by unique attributes (like the reference or memory address)
+            // Placeholder logic to generate a unique element reference
+            return element.GetHashCode().ToString();
         }
 
-        private bool SafeElementEquals(AutomationElement element1, AutomationElement element2)
+        private bool SafeElementEquals(AXUIElement element1, AXUIElement element2)
         {
             try
             {
                 return element1.Equals(element2);
             }
-            catch (COMException)
+            catch (Exception)
             {
-                // May occur if the element is suddenly no longer available
                 return false;
             }
         }
 
+        private bool IsElementAvailable(AXUIElement element)
+        {
+            // Implement logic to check if an element is still available
+            // For example, try accessing its attributes or properties
+            return true; // Simplified, real checks will depend on AXUIElement availability
+        }
+
+        private AXUIElement GetMainWindow(NSApplication app)
+        {
+            // Placeholder logic to get the main window of the application on macOS using AXUIElement
+            return new AXUIElement(app.MainWindow.Handle);
+        }
+    }
+    public class AXUIElement
+    {
+        // P/Invoke for creating AXUIElement based on a process ID (e.g., for an application)
+        [DllImport("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")]
+        public static extern IntPtr AXUIElementCreateApplication(int pid);
+
+        // P/Invoke for getting the main window of an application (AXUIElement is just a pointer in this case)
+        [DllImport("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")]
+        public static extern int AXUIElementCopyAttributeValue(IntPtr element, IntPtr attribute, out IntPtr value);
     }
 }

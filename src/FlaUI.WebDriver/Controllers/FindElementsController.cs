@@ -1,9 +1,8 @@
-﻿using FlaUI.WebDriver.Models;
+﻿using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.Mvc;
-using FlaUI.Core.Conditions;
-using FlaUI.Core.Definitions;
-using FlaUI.Core.AutomationElements;
-using System.Text.RegularExpressions;
+using System.Runtime.InteropServices;
+using FlaUI.WebDriver.Models;
+using FlaUI.WebDriver.Services;
 
 namespace FlaUI.WebDriver.Controllers
 {
@@ -24,7 +23,7 @@ namespace FlaUI.WebDriver.Controllers
         public async Task<ActionResult> FindElement([FromRoute] string sessionId, [FromBody] FindElementRequest findElementRequest)
         {
             var session = GetActiveSession(sessionId);
-            return await FindElementFrom(() => session.App == null ? session.Automation.GetDesktop() : session.CurrentWindow, findElementRequest, session);
+            return await FindElementFrom(() => session.App == IntPtr.Zero ? session.ApplicationElement : session.CurrentWindow, findElementRequest, session);
         }
 
         [HttpPost("element/{elementId}/element")]
@@ -39,7 +38,7 @@ namespace FlaUI.WebDriver.Controllers
         public async Task<ActionResult> FindElements([FromRoute] string sessionId, [FromBody] FindElementRequest findElementRequest)
         {
             var session = GetActiveSession(sessionId);
-            return await FindElementsFrom(() => session.App == null ? session.Automation.GetDesktop() : session.CurrentWindow, findElementRequest, session);
+            return await FindElementsFrom(() => session.App == IntPtr.Zero ? session.ApplicationElement : session.CurrentWindow, findElementRequest, session);
         }
 
         [HttpPost("element/{elementId}/elements")]
@@ -50,47 +49,47 @@ namespace FlaUI.WebDriver.Controllers
             return await FindElementsFrom(() => element, findElementRequest, session);
         }
 
-        private static async Task<ActionResult> FindElementFrom(Func<AutomationElement> startNode, FindElementRequest findElementRequest, Session session)
+        private static async Task<ActionResult> FindElementFrom(Func<IntPtr> startNode, FindElementRequest findElementRequest, Session session)
         {
-            AutomationElement? element;
+            IntPtr? element;
             if (findElementRequest.Using == "xpath") 
             { 
-                element = await Wait.Until(() => startNode().FindFirstByXPath(findElementRequest.Value), element => element != null, session.ImplicitWaitTimeout);
+                // XPath-like search is not supported natively in macOS, fallback to attribute searching
+                element = await Wait.Until(() => FindByXPath(startNode(), findElementRequest.Value), e => e != IntPtr.Zero, session.ImplicitWaitTimeout);
             }
             else 
             { 
-                var condition = GetCondition(session.Automation.ConditionFactory, findElementRequest.Using, findElementRequest.Value);
-                element = await Wait.Until(() => startNode().FindFirstDescendant(condition), element => element != null, session.ImplicitWaitTimeout);
+                var condition = GetCondition(findElementRequest.Using, findElementRequest.Value);
+                element = await Wait.Until(() => FindFirstDescendant(startNode(), condition), e => e != IntPtr.Zero, session.ImplicitWaitTimeout);
             }
 
-            if (element == null)
+            if (element == IntPtr.Zero)
             {
                 return NoSuchElement(findElementRequest);
             }
 
-            var knownElement = session.GetOrAddKnownElement(element);
+            var knownElement = session.GetOrAddKnownElement(element.Value);
             return await Task.FromResult(WebDriverResult.Success(new FindElementResponse
             {
                 ElementReference = knownElement.ElementReference,
             }));
         }
 
-        private static async Task<ActionResult> FindElementsFrom(Func<AutomationElement> startNode, FindElementRequest findElementRequest, Session session)
+        private static async Task<ActionResult> FindElementsFrom(Func<IntPtr> startNode, FindElementRequest findElementRequest, Session session)
         {
-            AutomationElement[] elements;
+            IntPtr[] elements;
             if (findElementRequest.Using == "xpath")
             {
-                elements = await Wait.Until(() => startNode().FindAllByXPath(findElementRequest.Value), elements => elements.Length > 0, session.ImplicitWaitTimeout);
+                elements = await Wait.Until(() => FindAllByXPath(startNode(), findElementRequest.Value), e => e.Length > 0, session.ImplicitWaitTimeout);
             }
             else
             {
-                var condition = GetCondition(session.Automation.ConditionFactory, findElementRequest.Using, findElementRequest.Value);
-                elements = await Wait.Until(() => startNode().FindAllDescendants(condition), elements => elements.Length > 0, session.ImplicitWaitTimeout);
+                var condition = GetCondition(findElementRequest.Using, findElementRequest.Value);
+                elements = await Wait.Until(() => FindAllDescendants(startNode(), condition), e => e.Length > 0, session.ImplicitWaitTimeout);
             }
 
             var knownElements = elements.Select(session.GetOrAddKnownElement);
             return await Task.FromResult(WebDriverResult.Success(
-
                 knownElements.Select(knownElement => new FindElementResponse()
                 {
                     ElementReference = knownElement.ElementReference
@@ -98,87 +97,42 @@ namespace FlaUI.WebDriver.Controllers
             ));
         }
 
-        /// <summary>
-        /// Based on https://www.w3.org/TR/CSS21/grammar.html (see also https://www.w3.org/TR/CSS22/grammar.html)
-        /// Limitations: 
-        /// - Unicode escape characters are not supported.
-        /// - Multiple selectors are not supported.
-        /// </summary>
-        private static Regex SimpleCssIdSelectorRegex = new Regex(@"^#(?<name>(?<nmchar>[_a-z0-9-]|[\240-\377]|(?<escape>\\[^\r\n\f0-9a-f]))+)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // Implement FindByXPath logic using AXUIElement if XPath is needed
+        private static IntPtr FindByXPath(IntPtr rootElement, string xpath)
+        {
+            // Placeholder for potential XPath to macOS attribute logic
+            return IntPtr.Zero;
+        }
 
-        /// <summary>
-        /// Based on https://www.w3.org/TR/CSS21/grammar.html (see also https://www.w3.org/TR/CSS22/grammar.html)
-        /// Limitations: 
-        /// - Unicode escape characters are not supported.
-        /// - Multiple selectors are not supported.
-        /// </summary>
-        private static Regex SimpleCssClassSelectorRegex = new Regex(@"^\.(?<ident>-?(?<nmstart>[_a-z]|[\240-\377])(?<nmchar>[_a-z0-9-]|[\240-\377]|(?<escape>\\[^\r\n\f0-9a-f]))*)$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        // Implement descendant search based on attributes (AXUIElement)
+        private static IntPtr FindFirstDescendant(IntPtr rootElement, string condition)
+        {
+            // Placeholder for a real descendant search based on macOS AXUIElement attributes
+            return IntPtr.Zero;
+        }
 
-        /// <summary>
-        /// Based on https://www.w3.org/TR/CSS21/grammar.html (see also https://www.w3.org/TR/CSS22/grammar.html)
-        /// Limitations: 
-        /// - Unicode escape characters or escape characters in the attribute name are not supported.
-        /// - Multiple selectors are not supported.
-        /// - Attribute presence selector (e.g. `[name]`) not supported.
-        /// - Attribute equals attribute (e.g. `[name=value]`) not supported.
-        /// - ~= or |= not supported.
-        /// </summary>
-        private static Regex SimpleCssAttributeSelectorRegex = new Regex(@"^\*?\[\s*(?<ident>-?(?<nmstart>[_a-z]|[\240-\377])(?<nmchar>[_a-z0-9-]|[\240-\377])*)\s*=\s*(?<string>(?<string1>""(?<string1value>([^\n\r\f\\""]|(?<escape>\\[^\r\n\f0-9a-f]))*)"")|(?<string2>'(?<string2value>([^\n\r\f\\']|(?<escape>\\[^\r\n\f0-9a-f]))*)'))\s*\]$", RegexOptions.Compiled | RegexOptions.IgnoreCase);
+        private static IntPtr[] FindAllDescendants(IntPtr rootElement, string condition)
+        {
+            // Placeholder for finding all descendants by attributes
+            return new IntPtr[0];
+        }
 
-        /// <summary>
-        /// Based on https://www.w3.org/TR/CSS21/grammar.html (see also https://www.w3.org/TR/CSS22/grammar.html)
-        /// Limitations: 
-        /// - Unicode escape characters are not supported.
-        /// </summary>
-        private static Regex SimpleCssEscapeCharacterRegex = new Regex(@"\\[^\r\n\f0-9a-f]", RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
-        private static PropertyCondition GetCondition(ConditionFactory conditionFactory, string @using, string value)
+        // Simple attribute-based condition search, no XPath support directly in macOS
+        private static string GetCondition(string @using, string value)
         {
             switch (@using)
             {
                 case "accessibility id":
-                    return conditionFactory.ByAutomationId(value);
+                    return $"AXIdentifier={value}";
                 case "name":
-                    return conditionFactory.ByName(value);
+                    return $"AXTitle={value}";
                 case "class name":
-                    return conditionFactory.ByClassName(value);
-                case "link text":
-                    return conditionFactory.ByText(value);
-                case "partial link text":
-                    return conditionFactory.ByText(value, PropertyConditionFlags.MatchSubstring);
+                    return $"AXRole={value}";
                 case "tag name":
-                    return conditionFactory.ByControlType(Enum.Parse<ControlType>(value));
-                case "css selector":
-                    var cssIdSelectorMatch = SimpleCssIdSelectorRegex.Match(value);
-                    if (cssIdSelectorMatch.Success)
-                    {
-                        return conditionFactory.ByAutomationId(ReplaceCssEscapedCharacters(value.Substring(1)));
-                    }
-                    var cssClassSelectorMatch = SimpleCssClassSelectorRegex.Match(value);
-                    if (cssClassSelectorMatch.Success)
-                    {
-                        return conditionFactory.ByClassName(ReplaceCssEscapedCharacters(value.Substring(1)));
-                    }
-                    var cssAttributeSelectorMatch = SimpleCssAttributeSelectorRegex.Match(value);
-                    if (cssAttributeSelectorMatch.Success)
-                    {
-                        var attributeValue = ReplaceCssEscapedCharacters(cssAttributeSelectorMatch.Groups["string1value"].Success ?
-                            cssAttributeSelectorMatch.Groups["string1value"].Value :
-                            cssAttributeSelectorMatch.Groups["string2value"].Value);
-                        if (cssAttributeSelectorMatch.Groups["ident"].Value == "name")
-                        {
-                            return conditionFactory.ByName(attributeValue);
-                        }
-                    }
-                    throw WebDriverResponseException.UnsupportedOperation($"Selector strategy 'css selector' with value '{value}' is not supported");
+                    return $"AXRole={value}";
                 default:
-                    throw WebDriverResponseException.UnsupportedOperation($"Selector strategy '{@using}' is not supported");
+                    throw new NotSupportedException($"Search strategy '{@using}' is not supported.");
             }
-        }
-
-        private static string ReplaceCssEscapedCharacters(string value)
-        {
-            return SimpleCssEscapeCharacterRegex.Replace(value, match => match.Value.Substring(1));
         }
 
         private static ActionResult NoSuchElement(FindElementRequest findElementRequest)
@@ -190,10 +144,10 @@ namespace FlaUI.WebDriver.Controllers
             });
         }
 
-        private AutomationElement GetElement(Session session, string elementId)
+        private IntPtr GetElement(Session session, string elementId)
         {
             var element = session.FindKnownElementById(elementId);
-            if (element == null)
+            if (element == IntPtr.Zero)
             {
                 throw WebDriverResponseException.ElementNotFound(elementId);
             }
@@ -203,7 +157,7 @@ namespace FlaUI.WebDriver.Controllers
         private Session GetActiveSession(string sessionId)
         {
             var session = GetSession(sessionId);
-            if (session.App != null && session.App.HasExited)
+            if (session.ApplicationElement == IntPtr.Zero)
             {
                 throw WebDriverResponseException.NoWindowsOpenForSession();
             }
@@ -220,5 +174,18 @@ namespace FlaUI.WebDriver.Controllers
             session.SetLastCommandTimeToNow();
             return session;
         }
+
+        #region P/Invoke for AXUIElement (macOS)
+
+        [DllImport("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")]
+        private static extern int AXUIElementCopyAttributeValue(IntPtr element, string attribute, out IntPtr value);
+
+        [DllImport("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")]
+        private static extern int AXUIElementSetAttributeValue(IntPtr element, string attribute, IntPtr value);
+
+        [DllImport("/System/Library/Frameworks/ApplicationServices.framework/ApplicationServices")]
+        private static extern int AXUIElementPerformAction(IntPtr element, string action);
+
+        #endregion
     }
 }
